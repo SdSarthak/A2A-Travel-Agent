@@ -1,0 +1,10 @@
+# Agent-to-agent protocol, servers and clients (pulls in flask + requests)
+python-a2a>=0.5.9
+
+# Local LLM access through Ollama
+langchain-ollama>=0.3.0
+langchain-core>=0.3.0
+
+# HTTP + configuration
+requests>=2.31.0
+python-dotenv>=1.0.0

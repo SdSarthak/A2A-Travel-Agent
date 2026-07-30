@@ -1,16 +1,53 @@
-﻿.env
-*.env
+# Secrets and credentials
+.env
 .env.local
 .env.*.local
+*.env
+!.env.example
 apikeys.txt
+secrets.json
+credentials.json
+serviceAccount*.json
+config.json
 *.key
 *.pem
-secrets.json
-config.json
+
+# Python
 __pycache__/
 *.pyc
-node_modules/
-venv/
+*.pyo
+.pytest_cache/
+.mypy_cache/
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
 env/
+venv/
+.venv/
+
+# Vendored upstream clone of the python-a2a library (install from PyPI instead)
+python-a2a/
+
+# Data, models and databases
+*.sqlite3
+*.h5
+*.pt
+*.pkl
+*.ckpt
+*.csv
+*.parquet
+
+# Generated travel plans
+plans/
+*.plan.md
+
+# Node
+node_modules/
+
+# Editors and OS
 .vscode/
 .idea/
+.DS_Store
+Thumbs.db

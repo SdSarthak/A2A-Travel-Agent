@@ -1,345 +1,264 @@
-# A2A Travel Agent 🌍✈️
+# A2A Travel Agent
 
-An intelligent multi-agent travel planning system built with Python-A2A framework that combines weather forecasting, location search, and AI-powered recommendations to create personalized travel plans. This project demonstrates advanced agent-to-agent communication, distributed system architecture, and AI-driven decision making for travel planning.
+A multi-agent travel planner built on the [python-a2a](https://python-a2a.readthedocs.io/)
+framework. Three specialised agents (weather, search, LLM) run as independent
+A2A servers and an orchestrator queries them over the agent-to-agent protocol to
+produce a weather-aware, day-by-day itinerary.
 
-## 🏗️ Architecture
-
-This project demonstrates a distributed agent architecture where specialized agents work together:
+## Architecture
 
 ```
 ┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
-│   Weather Agent │    │  Location Search │    │   LLM Agent     │
-│   Port: 8001    │    │     Agent        │    │   Port: 5001    │
-│                 │    │   Port: 8002     │    │                 │
-│ • Open-Meteo    │    │ • Nominatim API  │    │ • LLaMA 3.2     │
-│   API           │    │ • Activity Recs  │    │ • Ollama        │
-│ • Forecasting   │    │ • Geocoding      │    │ • Summarization │
+│  Weather Agent  │    │   Search Agent   │    │    LLM Agent    │
+│   Port: 8001    │    │    Port: 8002    │    │   Port: 5001    │
+│                 │    │                  │    │                 │
+│ • Open-Meteo    │    │ • Brave Search   │    │ • Ollama        │
+│ • Geocoding     │    │ • Nominatim      │    │ • LLaMA 3.2     │
+│ • Current/daily │    │ • Curated DB     │    │ • Synthesis     │
+│   /hourly       │    │   fallback       │    │                 │
 └─────────────────┘    └──────────────────┘    └─────────────────┘
          │                       │                       │
          └───────────────────────┼───────────────────────┘
                                  │
                    ┌─────────────────────────┐
                    │  Travel Planner Agent   │
-                   │  (Main Orchestrator)    │
+                   │   (orchestrator, CLI)   │
                    │                         │
-                   │ • Agent Network         │
-                   │ • Flow Coordination     │
-                   │ • Result Synthesis      │
+                   │ • Agent network         │
+                   │ • Weather classifier    │
+                   │ • Graceful degradation  │
+                   │ • Markdown plan output  │
                    └─────────────────────────┘
 ```
 
-## 🚀 Features
+## Features
 
-- **Multi-Agent Coordination**: Uses Python-A2A framework for seamless agent communication and distributed processing
-- **Weather-Aware Planning**: Automatically adjusts activity recommendations based on real-time weather conditions
-- **Location Intelligence**: Leverages OpenStreetMap's Nominatim API for accurate geocoding and location search
-- **Predefined Activity Database**: Curated activity suggestions for popular destinations (Paris, London, Tokyo) with intelligent fallback system
-- **AI-Powered Synthesis**: Utilizes local LLaMA 3.2 model via Ollama for creating comprehensive, contextual travel summaries
-- **Flexible Architecture**: Each agent runs independently with horizontal scaling capabilities
-- **Real-time Communication**: Asynchronous agent communication with robust error handling
-- **Contextual Decision Making**: Weather-based activity selection (sunny conditions → outdoor activities, otherwise → indoor alternatives)
-- **Comprehensive Weather Data**: Detailed forecasts including temperature, humidity, wind speed, precipitation, and weather conditions
-- **Graceful Degradation**: System continues to function even if individual agents experience issues
+- **Multi-agent coordination** over the A2A protocol using `AgentNetwork` and `A2AClient`.
+- **Weather-aware planning**: forecasts are parsed and classified (`good` / `fair` /
+  `poor`), and a wet current condition or a majority of wet forecast days switches
+  the plan from outdoor to indoor activities.
+- **Live web results**: the search agent calls the Brave Search API when
+  `BRAVE_API_KEY` is set and falls back to a curated database of ten cities
+  (Paris, London, Tokyo, New York, Rome, Barcelona, Amsterdam, Sydney, Dubai,
+  Singapore) otherwise.
+- **Geocoding and location search** through Open-Meteo geocoding and
+  OpenStreetMap Nominatim.
+- **AI synthesis** through a local Ollama model exposed as an A2A server.
+- **Graceful degradation**: if the LLM agent is down the planner builds a
+  deterministic day-by-day itinerary locally; if the weather or search agent is
+  down the plan is still produced and the missing agents are reported.
+- **Fully configurable**: ports, URLs, units, model, timeouts and trip defaults
+  all come from environment variables (see `.env.example`).
+- **One-command launcher** (`run_all.py`) and a **pytest suite** (78 tests) that
+  runs entirely offline.
 
-## 📋 Prerequisites
+## Prerequisites
 
 - Python 3.8+
-- Ollama with LLaMA 3.2 model installed
-- Virtual environment (recommended)
-- Internet connection for weather and location APIs
+- [Ollama](https://ollama.ai/) with a local model (default `llama3.2:latest`) —
+  optional, the planner works without it via `--no-llm`
+- Internet connection for the weather and location APIs
 
-## 🛠️ Installation
+## Installation
 
-1. **Clone the repository**
-   ```bash
-   git clone <repository-url>
-   cd "A2A Travel Agent"
-   ```
-
-2. **Create and activate virtual environment**
-   ```bash
-   python -m venv env
-   env\Scripts\activate  # Windows
-   # source env/bin/activate  # Linux/Mac
-   ```
-
-3. **Install dependencies**
-   ```bash
-   pip install python-a2a langchain-ollama langchain-core requests
-   ```
-
-4. **Install Ollama and LLaMA 3.2**
-   ```bash
-   # Download Ollama from https://ollama.ai/
-   ollama pull llama3.2:latest
-   ```
-
-5. **Set up environment (optional)**
-   The current implementation doesn't require API keys, but you can create a `.env` file for future enhancements:
-   ```env
-   # Future use for additional APIs
-   # BRAVE_API_KEY=your_api_key_here
-   ```
-
-## 🏃‍♂️ Running the System
-
-The system requires running multiple agents simultaneously. Open 4 separate terminal windows:
-
-### Terminal 1: Weather Agent
 ```bash
-python WeatherAgent.py
-```
-*Starts weather service on port 8001*
+git clone https://github.com/SdSarthak/a2a-travel-agent.git
+cd a2a-travel-agent
 
-### Terminal 2: Location Search Agent
+python -m venv env
+env\Scripts\activate         # Windows
+# source env/bin/activate    # Linux/macOS
+
+pip install -r requirements.txt
+ollama pull llama3.2:latest    # optional, for AI synthesis
+```
+
+Copy the example environment file and edit it if you want to change ports,
+units, the model, or add a Brave Search key:
+
 ```bash
-python BraveSearchAgent.py
+cp .env.example .env
 ```
-*Starts location search service on port 8002*
 
-### Terminal 3: LLM Agent
+Every variable is optional; the defaults in `config.py` are used when a variable
+is unset. No API key is required to run the system.
+
+## Running
+
+### One command
+
 ```bash
-python local_llm.py
+python run_all.py --destination Tokyo --dates "July 1-7" --days 5
+python run_all.py --skip-llm                # no Ollama installed
+python run_all.py --agents-only             # keep the agents up for manual use
 ```
-*Starts LLaMA 3.2 service on port 5001*
 
-### Terminal 4: Travel Planner (Main)
+`run_all.py` starts each agent as a subprocess, waits until it answers its
+health endpoint, runs the planner and then shuts the agents down again.
+
+### Manually, one terminal per agent
+
 ```bash
-python Travel_Planner_Agent.py
-```
-*Orchestrates all agents and generates travel plan*
-
-## 📊 How It Works
-
-### 1. Agent Network Setup
-```python
-network = AgentNetwork(name="Travel Assistant Network")
-network.add("weather", "http://localhost:8001")
-network.add("search", "http://localhost:8002")
+python WeatherAgent.py        # port 8001
+python BraveSearchAgent.py    # port 8002
+python local_llm.py           # port 5001
+python Travel_Planner_Agent.py --destination Paris --dates "June 21-25"
 ```
 
-### 2. Weather-Based Decision Making
-```python
-forecast = weather_agent.ask(f"What's the weather in {destination}?")
-if "sunny" in forecast.lower() or "clear" in forecast.lower():
-    activities = search_agent.ask(f"Recommend outdoor activities in {destination}")
-else:
-    activities = search_agent.ask(f"Recommend indoor activities in {destination}")
-```
+### Planner options
 
-### 3. AI-Powered Synthesis
-```python
-prompt = f"Based on weather forecast {forecast} and recommendations {activities}, 
-          suggest must-see attractions for {travel_dates}."
-travel_plan = llm_client.ask(prompt)
-```
+| Flag | Description | Default |
+| --- | --- | --- |
+| `-d`, `--destination` | Destination city | `Paris` (`DEFAULT_DESTINATION`) |
+| `-t`, `--dates` | Travel dates (free text) | `June 21-25` (`DEFAULT_TRAVEL_DATES`) |
+| `-n`, `--days` | Forecast days to request (1-16) | `7` |
+| `--weather-url` / `--search-url` / `--llm-url` | Agent endpoints | from config |
+| `--wait` | Seconds to wait for agents to come up | `15` |
+| `--no-llm` | Skip the LLM agent, build the itinerary locally | off |
+| `-o`, `--output` | Write the markdown plan to a file | off |
 
-## 🧩 Component Details
+## How it works
 
-### WeatherAgent.py
-- **API**: Open-Meteo (free weather API)
-- **Features**: Current conditions, forecasts, geocoding
-- **Skills**: `get_weather(location, forecast_days, include_current, include_hourly, include_daily)`
-- **Temperature**: Returns temperatures in Fahrenheit
-- **Data**: Includes humidity, wind speed, precipitation, and weather conditions
+1. **Discovery** — the planner waits for each agent's `/a2a/health` endpoint and
+   registers the weather and search agents in an `AgentNetwork`.
+2. **Forecast** — the weather agent geocodes the destination through Open-Meteo,
+   fetches current, daily and (on request) hourly data and returns a text report.
+3. **Classification** — `travel_utils.is_outdoor_friendly()` reads every
+   `Conditions:` line of that report and decides between outdoor and indoor
+   recommendations, returning the reason it chose.
+4. **Recommendations** — the search agent answers with live Brave Search results
+   or curated suggestions for the destination.
+5. **Synthesis** — the forecast and recommendations are folded into a prompt for
+   the local LLM; the answer is rendered as a markdown plan.
 
-### BraveSearchAgent.py (LocationSearchAgent)
-- **Primary API**: OpenStreetMap Nominatim (free geocoding API)
-- **Features**: Location search, geocoding, predefined activity recommendations
-- **Skills**: `search(query)` - handles both location and activity queries
-- **Activity Database**: Curated recommendations for Paris, London, Tokyo
-- **Fallback**: Generic recommendations for other locations
-
-### local_llm.py
-- **Model**: LLaMA 3.2 via Ollama
-- **Features**: Text generation, travel plan synthesis
-- **Integration**: LangChain → A2A Server conversion
-- **Threading**: Runs in background with graceful shutdown
-
-### Travel_Planner_Agent.py
-- **Role**: Main orchestrator
-- **Features**: Agent coordination, flow management, result synthesis
-- **Logic**: Weather-based activity selection (sunny → outdoor, otherwise → indoor)
-
-## 🎯 Example Output
+Example:
 
 ```
-Available Agents:
-- weather: Provides comprehensive weather information including current conditions and forecasts
-- search: Provides location search, geocoding, and activity recommendations for travel planning
+$ python run_all.py -d Paris -t "June 21-25" -n 3
 
-Weather forecast: Weather forecast for Paris, France
+weather agent : http://localhost:8001
+search agent  : http://localhost:8002
+llm agent     : http://localhost:5001
+ollama model  : llama3.2:latest @ http://localhost:11434
+brave search  : disabled (using curated recommendations)
+
+# Travel plan: Paris (June 21-25)
+
+## Weather
+Weather forecast for Paris, France
 ==================================================
 
 CURRENT CONDITIONS:
-Temperature: 72°F
+Temperature: 72.1F
 Humidity: 65%
-Wind Speed: 8 mph
-Wind Direction: 270°
-Conditions: Partly cloudy
+Wind Speed: 8.0 mph
+Conditions: Mainly clear
+...
 
-DAILY FORECAST:
-Friday, June 21:
-  High: 75°F, Low: 58°F
-  Conditions: Partly cloudy
-  Precipitation: 0.0 in
-  Max Wind: 12 mph
+Recommendation type: outdoor - current conditions are 'Mainly clear'.
 
-Prompt: You are a travel assistant. Based on the weather forecast result [...] 
-and the recommendations [Seine River cruise and walk along the riverbank...], 
-suggest me a few must-see attractions on date June 21-25.
+## Suggested activities
+- Seine River cruise and walk along the riverbank
+- Picnic in Luxembourg Gardens or Tuileries Garden
+...
 
-LLM response: Based on the pleasant weather forecast for June 21-25 in Paris, 
-here's your perfect itinerary:
-
-🌞 **June 21-25 Paris Adventure**
-- **Day 1**: Seine River cruise & Eiffel Tower visit
-- **Day 2**: Luxembourg Gardens picnic & Latin Quarter exploration
-- **Day 3**: Montmartre walking tour & Sacré-Cœur
-- **Day 4**: Louvre Museum & Tuileries Garden stroll
-- **Day 5**: Versailles day trip (outdoor gardens perfect for the weather)
-
-The partly cloudy skies are ideal for photography and outdoor exploration!
+## Itinerary
+Day 1: Seine River cruise & Eiffel Tower
+...
 ```
 
-## 🔧 Configuration
+## Project layout
 
-### Customizing Destinations
-Edit the `params` dictionary in `Travel_Planner_Agent.py`:
-```python
-params = {
-    "destination": "Tokyo",        # Change destination
-    "travel_dates": "July 1-7"    # Change dates
-}
+| File | Purpose |
+| --- | --- |
+| `config.py` | All configuration, loaded from the environment / `.env` |
+| `travel_utils.py` | Shared helpers: task parsing, location extraction, weather classification, agent health |
+| `WeatherAgent.py` | Open-Meteo weather agent (port 8001) |
+| `BraveSearchAgent.py` | Brave Search + Nominatim search agent (port 8002) |
+| `local_llm.py` | Ollama model exposed as an A2A server (port 5001) |
+| `Travel_Planner_Agent.py` | Orchestrator and CLI |
+| `run_all.py` | Starts every agent, runs the planner, cleans up |
+| `tests/` | Offline pytest suite |
+
+## Testing
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest
 ```
 
-### Adding New Activity Recommendations
-Edit the activity dictionaries in `BraveSearchAgent.py`:
-```python
-def _get_outdoor_activities(self, location):
-    activities = {
-        "your_city": [
-            "Activity 1",
-            "Activity 2",
-            # Add more activities
-        ],
-        # Add new cities
-    }
-```
+The suite stubs every HTTP call and every agent client, so it needs no network,
+no API key and no running agent.
 
-### Adjusting Weather Sensitivity
-Modify the weather condition logic in `Travel_Planner_Agent.py`:
-```python
-# Add more weather conditions
-if any(condition in forecast.lower() for condition in ["sunny", "clear", "partly cloudy"]):
-    activities = search_agent.ask(f"Recommend outdoor activities in {destination}")
-```
+Ad-hoc checks against a running system:
 
-### LLM Model Selection
-Change the model in `local_llm.py`:
-```python
-llm = OllamaLLM(model="llama3.1:latest")  # or other models
-```
-
-## 🔍 Troubleshooting
-
-### Common Issues
-
-1. **Port Already in Use**
-   ```bash
-   netstat -ano | findstr :8001  # Check port usage
-   taskkill /PID <PID> /F        # Kill process if needed
-   ```
-
-2. **Weather API Timeout**
-   - Open-Meteo API is free but may have rate limits
-   - Check internet connection
-   - Try reducing forecast_days parameter
-
-3. **Ollama Connection Issues**
-   ```bash
-   ollama list                    # Check installed models
-   ollama serve                   # Start Ollama service
-   ollama pull llama3.2:latest   # Ensure model is installed
-   ```
-
-4. **Agent Connection Timeouts**
-   - Ensure all agents are running before starting Travel_Planner_Agent.py
-   - Check firewall settings for localhost ports
-   - Verify no other applications are using ports 8001, 8002, 5001
-
-5. **Missing Dependencies**
-   ```bash
-   pip install --upgrade python-a2a langchain-ollama langchain-core requests
-   ```
-
-## 🧪 Testing Individual Agents
-
-### Test Weather Agent
 ```python
 from python_a2a import A2AClient
-weather_client = A2AClient("http://localhost:8001")
-result = weather_client.ask("Get weather for London")
-print(result)
+
+print(A2AClient("http://localhost:8001").ask("Get weather for London for 3 days"))
+print(A2AClient("http://localhost:8002").ask("Recommend outdoor activities in Paris"))
+print(A2AClient("http://localhost:5001").ask("Suggest a travel itinerary for Tokyo"))
 ```
 
-### Test Location Search Agent
-```python
-from python_a2a import A2AClient
-search_client = A2AClient("http://localhost:8002")
-result = search_client.ask("Recommend outdoor activities in Paris")
-print(result)
+## Configuration reference
+
+See `.env.example` for the full list. The most useful ones:
+
+| Variable | Purpose |
+| --- | --- |
+| `BRAVE_API_KEY` | Enables live web results in the search agent |
+| `OLLAMA_MODEL` / `OLLAMA_BASE_URL` | Which local model to serve and where |
+| `WEATHER_AGENT_PORT` / `SEARCH_AGENT_PORT` / `LLM_AGENT_PORT` | Ports to bind |
+| `WEATHER_AGENT_URL` / `SEARCH_AGENT_URL` / `LLM_AGENT_URL` | Point the planner at remote agents |
+| `TEMPERATURE_UNIT` / `WIND_SPEED_UNIT` / `PRECIPITATION_UNIT` | Output units |
+| `DEFAULT_DESTINATION` / `DEFAULT_TRAVEL_DATES` / `DEFAULT_FORECAST_DAYS` | Trip defaults |
+| `LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING`, ... |
+
+## Troubleshooting
+
+**Port already in use**
+
+```bash
+netstat -ano | findstr :8001   # Windows
+taskkill /PID <PID> /F
 ```
 
-### Test LLM Agent
-```python
-from python_a2a import A2AClient
-llm_client = A2AClient("http://localhost:5001")
-result = llm_client.ask("Suggest a travel itinerary for Tokyo")
-print(result)
+Or change the port: `WEATHER_AGENT_PORT=8011 python WeatherAgent.py`.
+
+**Ollama connection issues** — `local_llm.py` checks Ollama on startup and tells
+you whether it is unreachable or the model is missing:
+
+```bash
+ollama serve
+ollama list
+ollama pull llama3.2:latest
 ```
 
-## 📝 Current Limitations
+You can also run the planner without any LLM: `python run_all.py --skip-llm`.
 
-- **Activity Database**: Limited to Paris, London, and Tokyo with predefined recommendations
-- **Weather Dependency**: Simple sunny/not-sunny logic for activity selection
-- **No Real-time Search**: Uses predefined activity lists instead of live web search
-- **Single Language**: Only supports English
-- **No Persistence**: No database to store user preferences or history
+**Agent connection timeouts** — the planner waits `--wait` seconds for each
+agent and reports which ones it could not reach; the plan is still generated
+from whatever answered.
 
-## 🔮 Future Enhancements
+**Brave Search returns nothing** — the agent silently falls back to the curated
+database and logs a notice. Keys are never logged or echoed.
 
-- [ ] **Real Web Search**: Integrate actual Brave Search API or similar service
-- [ ] **Expanded Activity Database**: Add more cities and dynamic recommendations
-- [ ] **Flight Integration**: Add flight booking agent using airline APIs
-- [ ] **Hotel Recommendations**: Integrate accommodation search
-- [ ] **Currency Conversion**: Add real-time exchange rates
-- [ ] **Language Translation**: Multi-language support for international travel
-- [ ] **Calendar Integration**: Sync with Google Calendar/Outlook
-- [ ] **Budget Planning**: Cost estimation and budget tracking
-- [ ] **Real-time Updates**: WebSocket connections for live updates
-- [ ] **User Preferences**: Personalized recommendations based on user history
-- [ ] **Advanced Weather Logic**: More sophisticated weather-based recommendations
+## Limitations
 
-## 📝 License
+- Curated recommendations cover ten cities; everything else gets generic
+  suggestions unless a Brave Search key is configured.
+- Travel dates are free text and are passed to the LLM as-is.
+- No persistence: plans are printed (or written with `--output`), not stored.
+- English only.
 
-MIT License - see LICENSE file for details
+## Roadmap
 
-## 🤝 Contributing
+- [ ] Flight and hotel agents
+- [ ] Budget estimation
+- [ ] Multi-language output
+- [ ] Persisted user preferences and plan history
+- [ ] Streaming responses from the LLM agent
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+## License
 
-## 🆘 Support
-
-If you encounter any issues or have questions:
-- Create an issue on GitHub
-- Check the troubleshooting section above
-- Review Python-A2A documentation at [https://python-a2a.readthedocs.io/](https://python-a2a.readthedocs.io/)
-
----
-
-**Built with ❤️ using Python-A2A, LangChain, and Ollama**
+MIT — see [LICENSE](LICENSE).
