@@ -19,6 +19,10 @@ ACTIVITY_KEYWORDS = [
     "museums", "entertainment", "nightlife", "shopping", "tours",
 ]
 
+# Nominatim and Brave both reject very long queries; truncate rather than send
+# an unbounded string built from whatever arrived over A2A.
+MAX_QUERY_LENGTH = 300
+
 _HTML_TAG = re.compile(r"<[^>]+>")
 _CITY_ALIASES = {
     "new york city": "new york",
@@ -28,6 +32,14 @@ _CITY_ALIASES = {
     "firenze": "florence",
     "tokyo japan": "tokyo",
 }
+
+
+def _as_float(value, default=0.0):
+    """Coerce an API field to float; Nominatim has shipped both floats and strings."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 @agent(
@@ -44,10 +56,15 @@ class LocationSearchAgent(A2AServer):
         tags=["location", "coordinates", "geocoding", "activities", "recommendations", "brave"],
         examples="Search for 'New York City' or 'restaurants in Paris' or 'outdoor activities in London'",
     )
-    def search(self, query: str):
+    def search(self, query):
         """Smart search that determines if it's a location or activity query"""
-        if not query or not query.strip():
+        if query is None or not isinstance(query, str):
             return "Please provide a search query or location to find."
+        query = query.strip()
+        if not query:
+            return "Please provide a search query or location to find."
+        if len(query) > MAX_QUERY_LENGTH:
+            query = query[:MAX_QUERY_LENGTH]
 
         is_activity_query = any(keyword in query.lower() for keyword in ACTIVITY_KEYWORDS)
 
@@ -400,7 +417,13 @@ class LocationSearchAgent(A2AServer):
     def _parse_brave_results(payload):
         """Normalise a Brave Search payload into title/description/url dicts."""
         results = []
-        for item in ((payload or {}).get("web") or {}).get("results") or []:
+        if not isinstance(payload, dict):
+            return results
+        web = payload.get("web")
+        items = web.get("results") if isinstance(web, dict) else None
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
             title = _HTML_TAG.sub("", item.get("title") or "").strip()
             if not title:
                 continue
@@ -439,37 +462,61 @@ class LocationSearchAgent(A2AServer):
         except ValueError:
             return "Location search failed: the geocoding service returned invalid data."
 
+        # Nominatim reports failures as a JSON object, not the usual array.
+        if isinstance(data, dict):
+            reason = data.get("error") or "unexpected response shape"
+            logger.warning("nominatim returned an error object: %s", reason)
+            return f"Location search failed: {reason}."
+        if not isinstance(data, list):
+            return "Location search failed: the geocoding service returned invalid data."
         if not data:
             return f"No location results found for '{query}'."
 
         results = []
         for result in data:
-            display_name = result.get("display_name", "Unknown location")
+            if not isinstance(result, dict):
+                continue
+            display_name = result.get("display_name") or "Unknown location"
             lat = result.get("lat", "N/A")
             lon = result.get("lon", "N/A")
-            place_type = result.get("type", "location")
-            importance = result.get("importance", 0) or 0
+            place_type = result.get("type") or "location"
+            importance = _as_float(result.get("importance"), 0.0)
 
             results.append(f"- {display_name}")
             results.append(f"  Type: {place_type}")
             results.append(f"  Coordinates: {lat}, {lon}")
-            results.append(f"  Importance: {float(importance):.3f}")
+            results.append(f"  Importance: {importance:.3f}")
             results.append("")
+
+        if not results:
+            return f"No location results found for '{query}'."
 
         return f"Location search results for '{query}':\n\n" + "\n".join(results)
 
     def handle_task(self, task):
         text = extract_message_text(task)
 
-        if text:
-            task.artifacts = text_artifact(self.search(text))
-            task.status = TaskStatus(state=TaskState.COMPLETED)
-        else:
+        if not text:
             task.status = TaskStatus(
                 state=TaskState.INPUT_REQUIRED,
                 message={"role": "agent", "content": {"type": "text",
                          "text": "Please provide a search query or location to find."}},
             )
+            return task
+
+        try:
+            answer = self.search(text)
+        except Exception as exc:  # noqa: BLE001 - never 500 the A2A endpoint
+            logger.exception("search failed for query %r", text[:120])
+            task.status = TaskStatus(
+                state=TaskState.FAILED,
+                message={"role": "agent", "content": {"type": "text",
+                         "text": f"Search failed: {type(exc).__name__}."}},
+            )
+            return task
+
+        task.artifacts = text_artifact(answer)
+        task.status = TaskStatus(state=TaskState.COMPLETED)
         return task
 
 

@@ -119,6 +119,73 @@ class TestGetWeather:
         monkeypatch.setattr(weather_module.requests, "get", boom)
         assert "Error looking up location" in agent.get_weather("Paris")
 
+    @pytest.mark.parametrize("location", ["", "   ", None, 42])
+    def test_invalid_location_is_rejected_without_a_request(self, agent, monkeypatch, location):
+        def boom(*args, **kwargs):
+            raise AssertionError("no HTTP call should be made")
+
+        monkeypatch.setattr(weather_module.requests, "get", boom)
+        assert agent.get_weather(location) == "Please specify a location for the weather forecast."
+
+    def test_oversized_location_is_truncated(self, agent, fake_api):
+        agent.get_weather("x" * 5000)
+        geo_call = fake_api[0]
+        assert len(geo_call[1]["name"]) == weather_module.MAX_LOCATION_LENGTH
+
+    @pytest.mark.parametrize("value,expected", [
+        ("3", 3), (None, weather_module.config.DEFAULT_FORECAST_DAYS),
+        ("not a number", weather_module.config.DEFAULT_FORECAST_DAYS),
+        (0, 1), (-5, 1), (999, 16), (2.9, 2),
+    ])
+    def test_forecast_days_are_coerced(self, agent, fake_api, value, expected):
+        agent.get_weather("Paris", forecast_days=value)
+        assert fake_api[-1][1]["forecast_days"] == expected
+
+
+class TestMalformedPayloads:
+    @pytest.mark.parametrize("payload", [
+        {}, {"results": []}, {"results": "nope"}, {"results": [None]},
+        {"results": [{"name": "Paris"}]},          # coordinates missing
+        {"results": [{"latitude": "x", "longitude": "y"}]},  # coordinates unusable
+        [],                                        # not an object at all
+    ])
+    def test_unusable_geocoding_payloads_return_none(self, agent, monkeypatch, stub_response,
+                                                     payload):
+        monkeypatch.setattr(
+            weather_module.requests, "get", lambda *a, **kw: stub_response(payload)
+        )
+        assert agent.geocode("Paris") is None
+
+    def test_non_json_geocoding_response(self, agent, monkeypatch, stub_response):
+        monkeypatch.setattr(
+            weather_module.requests,
+            "get",
+            lambda *a, **kw: stub_response(ValueError("not json")),
+        )
+        assert agent.geocode("Paris") is None
+
+    def test_forecast_sections_of_the_wrong_type_do_not_crash(self, agent):
+        report = agent._format_weather_response(
+            {"current": [1, 2], "daily": "nope", "hourly": None},
+            "Paris", "France", True, True, True,
+        )
+        assert "Weather forecast for Paris, France" in report
+        assert "CURRENT CONDITIONS:" not in report
+
+    def test_non_dict_forecast_payload(self, agent):
+        report = agent._format_weather_response(["junk"], "Paris", "France", True, True, True)
+        assert "No forecast data was returned" in report
+
+    def test_daily_series_shorter_than_time_axis(self, agent):
+        data = {"daily": {"time": ["2025-06-21", "2025-06-22"], "temperature_2m_max": [70.0]}}
+        report = agent._format_weather_response(data, "Paris", "", True, True, False)
+        assert report.count("High: N/A") == 1
+
+    def test_value_at_rejects_negative_index_and_bad_series(self, agent):
+        assert agent._value_at({"a": [1, 2]}, "a", -1) == "N/A"
+        assert agent._value_at({"a": "string"}, "a", 0) == "N/A"
+        assert agent._value_at(None, "a", 0) == "N/A"
+
 
 class TestHandleTask:
     def test_weather_query_completes(self, agent, fake_api, make_task):
@@ -137,3 +204,22 @@ class TestHandleTask:
     def test_missing_location_asks_for_input(self, agent, make_task):
         task = agent.handle_task(make_task("weather"))
         assert task.status.state == TaskState.INPUT_REQUIRED
+
+    def test_noise_word_location_asks_for_input(self, agent, monkeypatch, make_task):
+        """'weather in the next 7 days' leaves 'the' behind - do not geocode it."""
+        def boom(*args, **kwargs):
+            raise AssertionError("no HTTP call should be made")
+
+        monkeypatch.setattr(weather_module.requests, "get", boom)
+        task = agent.handle_task(make_task("What's the weather in the next 7 days?"))
+        assert task.status.state == TaskState.INPUT_REQUIRED
+
+    def test_unexpected_error_fails_the_task_instead_of_raising(self, agent, monkeypatch,
+                                                               make_task):
+        def boom(**kwargs):
+            raise RuntimeError("kaboom")
+
+        monkeypatch.setattr(agent, "get_weather", boom)
+        task = agent.handle_task(make_task("weather in Paris"))
+        assert task.status.state == TaskState.FAILED
+        assert "RuntimeError" in task.status.message["content"]["text"]

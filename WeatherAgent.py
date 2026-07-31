@@ -16,6 +16,23 @@ logger = configure_logging("weather-agent")
 
 WEATHER_KEYWORDS = ("weather", "forecast", "temperature", "rain", "climate", "conditions")
 
+# Open-Meteo rejects absurd place names; anything longer is noise, not a city.
+MAX_LOCATION_LENGTH = 120
+
+# Words extract_location can leave behind when a query has no real place in it.
+_NON_LOCATIONS = frozenset({"the", "a", "an", "me", "my", "it", "there", "here", "and", "of"})
+
+
+def _coerce_days(value):
+    """Clamp a caller-supplied forecast day count into the Open-Meteo range."""
+    if value is None:
+        value = config.DEFAULT_FORECAST_DAYS
+    try:
+        days = int(value)
+    except (TypeError, ValueError):
+        days = config.DEFAULT_FORECAST_DAYS
+    return max(1, min(days, config.MAX_FORECAST_DAYS))
+
 
 @agent(
     name="Weather Agent",
@@ -34,8 +51,11 @@ class WeatherAgent(A2AServer):
     def get_weather(self, location, forecast_days=None, include_current=True,
                     include_hourly=False, include_daily=True):
         """Get comprehensive weather data using Open-Meteo API."""
-        if forecast_days is None:
-            forecast_days = config.DEFAULT_FORECAST_DAYS
+        if not isinstance(location, str) or not location.strip():
+            return "Please specify a location for the weather forecast."
+        location = location.strip()[:MAX_LOCATION_LENGTH]
+
+        forecast_days = _coerce_days(forecast_days)
 
         try:
             geocoded = self.geocode(location)
@@ -49,7 +69,7 @@ class WeatherAgent(A2AServer):
             params = {
                 "latitude": geocoded["latitude"],
                 "longitude": geocoded["longitude"],
-                "forecast_days": max(1, min(forecast_days, config.MAX_FORECAST_DAYS)),
+                "forecast_days": forecast_days,
                 "timezone": "auto",
                 "temperature_unit": config.TEMPERATURE_UNIT,
                 "wind_speed_unit": config.WIND_SPEED_UNIT,
@@ -97,7 +117,8 @@ class WeatherAgent(A2AServer):
 
         except requests.RequestException as e:
             return f"Error fetching weather: {e}"
-        except (KeyError, TypeError, IndexError, ValueError) as e:
+        except (AttributeError, KeyError, TypeError, IndexError, ValueError) as e:
+            logger.warning("malformed forecast payload for %s: %s", location, e)
             return f"Could not parse weather data: {e}"
 
     def geocode(self, location):
@@ -109,16 +130,28 @@ class WeatherAgent(A2AServer):
             headers={"User-Agent": config.USER_AGENT},
         )
         response.raise_for_status()
-        results = response.json().get("results") or []
-        if not results:
+        try:
+            payload = response.json()
+        except ValueError:
+            return None
+        results = payload.get("results") if isinstance(payload, dict) else None
+        if not results or not isinstance(results, list):
             return None
 
         result = results[0]
+        if not isinstance(result, dict):
+            return None
+        try:
+            latitude = float(result["latitude"])
+            longitude = float(result["longitude"])
+        except (KeyError, TypeError, ValueError):
+            return None
+
         return {
-            "latitude": result["latitude"],
-            "longitude": result["longitude"],
-            "name": result.get("name", location),
-            "country": result.get("country", ""),
+            "latitude": latitude,
+            "longitude": longitude,
+            "name": result.get("name") or location,
+            "country": result.get("country") or "",
         }
 
     def _format_weather_response(self, data, city_name, country, include_current,
@@ -128,9 +161,16 @@ class WeatherAgent(A2AServer):
         report = header + "\n" + "=" * 50 + "\n\n"
         unit = config.temperature_symbol()
 
+        if not isinstance(data, dict):
+            return report + "No forecast data was returned for this location.\n"
+
+        def section(key):
+            value = data.get(key)
+            return value if isinstance(value, dict) else None
+
         # Current weather
-        if include_current and "current" in data:
-            current = data["current"]
+        current = section("current")
+        if include_current and current is not None:
             report += "CURRENT CONDITIONS:\n"
             report += f"Temperature: {current.get('temperature_2m', 'N/A')}{unit}\n"
             report += f"Humidity: {current.get('relative_humidity_2m', 'N/A')}%\n"
@@ -139,11 +179,11 @@ class WeatherAgent(A2AServer):
             report += f"Conditions: {self._get_weather_description(current.get('weather_code'))}\n\n"
 
         # Daily forecast
-        if include_daily and "daily" in data:
-            daily = data["daily"]
+        daily = section("daily")
+        if include_daily and daily is not None:
             report += "DAILY FORECAST:\n"
 
-            for i, date in enumerate(daily.get("time", [])):
+            for i, date in enumerate(daily.get("time") or []):
                 if i >= config.MAX_FORECAST_DAYS:
                     break
 
@@ -164,11 +204,11 @@ class WeatherAgent(A2AServer):
                 )
 
         # Hourly forecast (next 12 hours)
-        if include_hourly and "hourly" in data:
-            hourly = data["hourly"]
+        hourly = section("hourly")
+        if include_hourly and hourly is not None:
             report += "HOURLY FORECAST (next 12 hours):\n"
 
-            for i, timestamp in enumerate(hourly.get("time", [])[:12]):
+            for i, timestamp in enumerate((hourly.get("time") or [])[:12]):
                 hour = self._format_date(timestamp, "%a %H:%M")
                 report += (
                     f"  {hour}: {self._value_at(hourly, 'temperature_2m', i)}{unit}, "
@@ -183,8 +223,10 @@ class WeatherAgent(A2AServer):
     @staticmethod
     def _value_at(series, key, index):
         """Safely read ``series[key][index]`` from an Open-Meteo payload."""
-        values = series.get(key) or []
-        if index < len(values) and values[index] is not None:
+        values = series.get(key) if isinstance(series, dict) else None
+        if not isinstance(values, (list, tuple)):
+            return "N/A"
+        if 0 <= index < len(values) and values[index] is not None:
             return values[index]
         return "N/A"
 
@@ -250,7 +292,7 @@ class WeatherAgent(A2AServer):
             return task
 
         location = extract_location(text)
-        if not location:
+        if not location or location.lower() in _NON_LOCATIONS:
             task.status = TaskStatus(
                 state=TaskState.INPUT_REQUIRED,
                 message={"role": "agent", "content": {"type": "text",
@@ -258,13 +300,23 @@ class WeatherAgent(A2AServer):
             )
             return task
 
-        weather_text = self.get_weather(
-            location=location,
-            forecast_days=parse_forecast_days(text),
-            include_current=True,
-            include_hourly="hourly" in text.lower(),
-            include_daily=True,
-        )
+        try:
+            weather_text = self.get_weather(
+                location=location,
+                forecast_days=parse_forecast_days(text),
+                include_current=True,
+                include_hourly="hourly" in text.lower(),
+                include_daily=True,
+            )
+        except Exception as exc:  # noqa: BLE001 - never 500 the A2A endpoint
+            logger.exception("weather lookup failed for %r", location)
+            task.status = TaskStatus(
+                state=TaskState.FAILED,
+                message={"role": "agent", "content": {"type": "text",
+                         "text": f"Weather lookup failed: {type(exc).__name__}."}},
+            )
+            return task
+
         task.artifacts = text_artifact(weather_text)
         task.status = TaskStatus(state=TaskState.COMPLETED)
         return task

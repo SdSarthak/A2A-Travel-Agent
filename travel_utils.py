@@ -93,7 +93,7 @@ def extract_location(text, default=""):
     >>> extract_location("Get weather for New York for the next 7 days")
     'New York'
     """
-    if not text:
+    if not text or not isinstance(text, str):
         return default
 
     cleaned = text.strip().rstrip("?.!,")
@@ -118,7 +118,7 @@ def parse_forecast_days(text, default=None):
     """Read a day count out of a query, clamped to the Open-Meteo maximum."""
     if default is None:
         default = config.DEFAULT_FORECAST_DAYS
-    match = _DAYS_PATTERN.search(text or "")
+    match = _DAYS_PATTERN.search(text if isinstance(text, str) else "")
     if not match:
         return default
     return max(1, min(int(match.group(1)), config.MAX_FORECAST_DAYS))

@@ -153,6 +153,70 @@ class TestLocationSearch:
         monkeypatch.setattr(search_module.requests, "get", boom)
         assert agent.search("Paris").startswith("Location search failed")
 
+    def test_error_object_instead_of_array(self, agent, monkeypatch, stub_response):
+        """Nominatim reports some failures as {"error": ...}, not a list."""
+        monkeypatch.setattr(
+            search_module.requests,
+            "get",
+            lambda *a, **kw: stub_response({"error": "Unable to geocode"}),
+        )
+        result = agent.search("Paris")
+        assert result == "Location search failed: Unable to geocode."
+
+    def test_scalar_payload_is_rejected(self, agent, monkeypatch, stub_response):
+        monkeypatch.setattr(
+            search_module.requests, "get", lambda *a, **kw: stub_response("nonsense")
+        )
+        assert "returned invalid data" in agent.search("Paris")
+
+    def test_non_numeric_importance_does_not_crash(self, agent, monkeypatch, stub_response):
+        payload = [dict(NOMINATIM_PAYLOAD[0], importance="high")]
+        monkeypatch.setattr(
+            search_module.requests, "get", lambda *a, **kw: stub_response(payload)
+        )
+        assert "Importance: 0.000" in agent.search("Paris")
+
+    def test_non_dict_entries_are_skipped(self, agent, monkeypatch, stub_response):
+        monkeypatch.setattr(
+            search_module.requests, "get", lambda *a, **kw: stub_response(["junk", None])
+        )
+        assert "No location results found" in agent.search("Paris")
+
+    def test_invalid_json_is_reported(self, agent, monkeypatch, stub_response):
+        monkeypatch.setattr(
+            search_module.requests,
+            "get",
+            lambda *a, **kw: stub_response(ValueError("not json")),
+        )
+        assert "returned invalid data" in agent.search("Paris")
+
+
+class TestQueryValidation:
+    def test_non_string_query(self, agent):
+        assert agent.search(1234) == "Please provide a search query or location to find."
+        assert agent.search(None) == "Please provide a search query or location to find."
+
+    def test_oversized_query_is_truncated(self, agent, monkeypatch, stub_response):
+        captured = {}
+
+        def fake_get(url, params=None, **kwargs):
+            captured["params"] = params or {}
+            return stub_response([])
+
+        monkeypatch.setattr(search_module.requests, "get", fake_get)
+        agent.search("x" * 5000)
+        assert len(captured["params"]["q"]) == search_module.MAX_QUERY_LENGTH
+
+
+class TestBravePayloadParsing:
+    @pytest.mark.parametrize("payload", [None, [], "text", {"web": "not a dict"}, {}])
+    def test_malformed_payloads_yield_no_results(self, agent, payload):
+        assert agent._parse_brave_results(payload) == []
+
+    def test_non_dict_entries_are_skipped(self, agent):
+        payload = {"web": {"results": ["junk", {"title": "Real", "url": "u"}]}}
+        assert [r["title"] for r in agent._parse_brave_results(payload)] == ["Real"]
+
 
 class TestHandleTask:
     def test_completes_for_text(self, agent, no_brave_key, make_task):
@@ -163,3 +227,13 @@ class TestHandleTask:
     def test_input_required_for_blank(self, agent, make_task):
         task = agent.handle_task(make_task("   "))
         assert task.status.state == TaskState.INPUT_REQUIRED
+
+    def test_unexpected_error_fails_the_task_instead_of_raising(self, agent, monkeypatch,
+                                                               make_task):
+        def boom(query):
+            raise RuntimeError("kaboom")
+
+        monkeypatch.setattr(agent, "search", boom)
+        task = agent.handle_task(make_task("things to do in Paris"))
+        assert task.status.state == TaskState.FAILED
+        assert "RuntimeError" in task.status.message["content"]["text"]
