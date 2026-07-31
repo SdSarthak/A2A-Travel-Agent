@@ -27,24 +27,50 @@ AGENTS = [
 
 def start_agent(script):
     """Spawn one agent process."""
-    return subprocess.Popen(
-        [sys.executable, os.path.join(PROJECT_DIR, script)],
-        cwd=PROJECT_DIR,
-    )
+    path = os.path.join(PROJECT_DIR, script)
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"agent script is missing: {path}")
+    return subprocess.Popen([sys.executable, path], cwd=PROJECT_DIR)
 
 
-def stop_processes(processes):
-    """Terminate every spawned agent, killing anything that will not exit."""
+def stop_processes(processes, timeout=10):
+    """Terminate every spawned agent, killing anything that will not exit.
+
+    Signals all of them first, then waits, so shutdown costs one timeout in
+    total rather than one per agent.
+    """
     for name, process in processes:
         if process.poll() is not None:
             continue
         logger.info("stopping %s agent", name)
-        process.terminate()
-    for _, process in processes:
         try:
-            process.wait(timeout=10)
+            process.terminate()
+        except OSError as exc:  # already reaped by the OS
+            logger.debug("could not terminate %s: %s", name, exc)
+
+    deadline = time.monotonic() + timeout
+    for name, process in processes:
+        remaining = max(0.0, deadline - time.monotonic())
+        try:
+            process.wait(timeout=remaining)
         except subprocess.TimeoutExpired:
+            logger.warning("%s agent ignored terminate, killing it", name)
             process.kill()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                logger.error("%s agent could not be killed", name)
+
+
+def _positive_float(value):
+    """argparse type for a timeout that has to be usable."""
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError(f"{value!r} is not a number")
+    if seconds <= 0:
+        raise argparse.ArgumentTypeError("timeout must be greater than zero")
+    return seconds
 
 
 def parse_args(argv=None):
@@ -56,16 +82,24 @@ def parse_args(argv=None):
                         help="start the agents and keep them running")
     parser.add_argument("--skip-llm", action="store_true",
                         help="do not start the Ollama-backed LLM agent")
-    parser.add_argument("--startup-timeout", type=float, default=45.0,
+    parser.add_argument("--startup-timeout", type=_positive_float, default=45.0,
                         help="seconds to wait for each agent (default: %(default)s)")
     known, planner_args = parser.parse_known_args(argv)
     return known, planner_args
 
 
+def wanted_agents(skip_llm):
+    """The agents to start, honouring ``--skip-llm``."""
+    return [agent for agent in AGENTS if not (skip_llm and agent[0] == "llm")]
+
+
 def main(argv=None):
     args, planner_args = parse_args(argv)
 
-    wanted = [a for a in AGENTS if not (args.skip_llm and a[0] == "llm")]
+    # Starting an Ollama-backed server the planner has been told to ignore
+    # burns a port and a model load for nothing.
+    skip_llm = args.skip_llm or "--no-llm" in planner_args
+    wanted = wanted_agents(skip_llm)
     processes = []
 
     try:
@@ -83,13 +117,18 @@ def main(argv=None):
             logger.info("agents running. Press Ctrl+C to stop.")
             while all(process.poll() is None for _, process in processes):
                 time.sleep(1)
-            return 0
+            dead = [name for name, process in processes if process.poll() is not None]
+            logger.error("agent(s) exited: %s", ", ".join(dead))
+            return 1
 
-        if args.skip_llm and "--no-llm" not in planner_args:
+        if skip_llm and "--no-llm" not in planner_args:
             planner_args.append("--no-llm")
 
         return Travel_Planner_Agent.main(planner_args)
 
+    except FileNotFoundError as exc:
+        logger.error("%s", exc)
+        return 2
     except KeyboardInterrupt:
         logger.info("interrupted")
         return 130

@@ -25,7 +25,7 @@ def build_llm_server(llm=None):
 
 
 def available_models(base_url=None, timeout=5):
-    """List the model tags Ollama currently has installed."""
+    """List the model tags Ollama currently has installed, or None if unreachable."""
     url = (base_url or config.OLLAMA_BASE_URL).rstrip("/") + "/api/tags"
     try:
         response = requests.get(url, timeout=timeout)
@@ -33,7 +33,25 @@ def available_models(base_url=None, timeout=5):
         payload = response.json()
     except (requests.RequestException, ValueError):
         return None
-    return [model.get("name", "") for model in payload.get("models", [])]
+
+    if not isinstance(payload, dict):
+        return []
+    models = payload.get("models")
+    if not isinstance(models, list):
+        return []
+    return [
+        model.get("name", "")
+        for model in models
+        if isinstance(model, dict) and model.get("name")
+    ]
+
+
+def normalise_model_tag(name):
+    """Ollama stores untagged models as ``name:latest``; compare like for like."""
+    text = (name or "").strip()
+    if not text:
+        return ""
+    return text if ":" in text else f"{text}:latest"
 
 
 def check_ollama():
@@ -45,12 +63,15 @@ def check_ollama():
             config.OLLAMA_BASE_URL,
         )
         return False
-    if config.OLLAMA_MODEL not in models:
+
+    wanted = normalise_model_tag(config.OLLAMA_MODEL)
+    installed = {normalise_model_tag(name) for name in models}
+    if wanted not in installed:
         logger.warning(
             "model '%s' is not installed - run 'ollama pull %s' (installed: %s)",
             config.OLLAMA_MODEL,
             config.OLLAMA_MODEL,
-            ", ".join(models) or "none",
+            ", ".join(sorted(models)) or "none",
         )
         return False
     return True
@@ -59,12 +80,21 @@ def check_ollama():
 def main():
     check_ollama()
 
-    llm_server = build_llm_server()
+    try:
+        llm_server = build_llm_server()
+    except Exception as exc:  # noqa: BLE001 - surface a usable message, not a traceback
+        logger.error(
+            "could not build the LLM server for model '%s' at %s: %s: %s",
+            config.OLLAMA_MODEL, config.OLLAMA_BASE_URL, type(exc).__name__, exc,
+        )
+        return 1
+
     llm_thread = threading.Thread(
         target=lambda: run_server(
             llm_server, host=config.AGENT_HOST, port=config.LLM_AGENT_PORT
         ),
         daemon=True,
+        name="llm-server",
     )
     llm_thread.start()
 
@@ -79,8 +109,12 @@ def main():
             llm_thread.join(1)
     except KeyboardInterrupt:
         logger.info("stopping llm agent")
-        sys.exit(0)
+        return 130
+
+    # The serving thread only exits on its own if run_server failed.
+    logger.error("llm server stopped unexpectedly")
+    return 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
