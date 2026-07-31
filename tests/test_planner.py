@@ -68,6 +68,18 @@ class TestPlanTrip:
         assert "No weather data available" in plan["forecast"]
         assert plan["itinerary"]
 
+    def test_dead_weather_agent_does_not_claim_clear_skies(self, stub_client):
+        plan = planner.plan_trip(
+            "Paris", "June 21-25", 3,
+            weather_client=None,
+            search_client=stub_client(answer=ACTIVITIES),
+            llm_client=None,
+        )
+        assert "weather" in plan["degraded"]
+        assert "no adverse weather detected" not in plan["reason"]
+        assert "no weather data" in plan["reason"]
+        assert "no weather data" in planner.render_plan(plan)
+
     def test_dead_search_agent_does_not_become_a_fake_itinerary(self, stub_client):
         """The search fallback sentence must never be numbered as 'Day 1'."""
         plan = planner.plan_trip(

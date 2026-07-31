@@ -173,15 +173,18 @@ def plan_trip(destination, travel_dates, forecast_days, weather_client, search_c
     """
     degraded = []
 
-    forecast, ok = ask_agent(
+    forecast, weather_ok = ask_agent(
         weather_client,
         f"What's the weather in {destination} for the next {forecast_days} days?",
         fallback=f"No weather data available for {destination}.",
     )
-    if not ok:
+    if not weather_ok:
         degraded.append("weather")
 
     outdoor_friendly, reason = is_outdoor_friendly(forecast)
+    if not weather_ok:
+        # Do not claim "no adverse weather detected" when there was no forecast.
+        reason = "no weather data was available, defaulting to outdoor plans"
     kind = "outdoor" if outdoor_friendly else "indoor"
 
     activities, activities_ok = ask_agent(

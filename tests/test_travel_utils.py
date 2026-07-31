@@ -1,3 +1,4 @@
+import pytest
 import requests
 
 import travel_utils
@@ -163,10 +164,100 @@ class TestAgentHealth:
         monkeypatch.setattr(travel_utils.requests, "get", boom)
         assert travel_utils.is_agent_up("http://localhost:9999") is False
 
+    def test_server_error_is_not_healthy(self, monkeypatch, stub_response):
+        monkeypatch.setattr(
+            travel_utils.requests, "get", lambda *a, **kw: stub_response(status_code=503)
+        )
+        assert travel_utils.is_agent_up("http://localhost:9999") is False
+
+    def test_probe_budget_is_shared_across_endpoints(self, monkeypatch):
+        """A dead port must cost about `timeout`, not timeout x endpoints."""
+        timeouts = []
+
+        def record(url, timeout=None):
+            timeouts.append(timeout)
+            raise requests.ConnectionError("refused")
+
+        monkeypatch.setattr(travel_utils.requests, "get", record)
+        travel_utils.is_agent_up("http://localhost:9999", timeout=3.0)
+        assert len(timeouts) == len(travel_utils._HEALTH_PATHS)
+        assert sum(timeouts) <= 3.0 + 1e-9
+
+    def test_probe_timeout_has_a_floor(self, monkeypatch):
+        timeouts = []
+
+        def record(url, timeout=None):
+            timeouts.append(timeout)
+            raise requests.ConnectionError("refused")
+
+        monkeypatch.setattr(travel_utils.requests, "get", record)
+        travel_utils.is_agent_up("http://localhost:9999", timeout=0.0)
+        assert all(t >= 0.25 for t in timeouts)
+
+    def test_trailing_slash_does_not_double_up(self, monkeypatch, stub_response):
+        urls = []
+
+        def record(url, timeout=None):
+            urls.append(url)
+            raise requests.ConnectionError("refused")
+
+        monkeypatch.setattr(travel_utils.requests, "get", record)
+        travel_utils.is_agent_up("http://localhost:9999/")
+        assert urls[0] == "http://localhost:9999/a2a/health"
+        assert "//a2a" not in urls[0]
+
     def test_wait_for_agent_gives_up(self, monkeypatch):
         monkeypatch.setattr(travel_utils, "is_agent_up", lambda url, **kw: False)
         monkeypatch.setattr(travel_utils.time, "sleep", lambda seconds: None)
         assert travel_utils.wait_for_agent("http://localhost:9999", timeout=0.01) is False
+
+    def test_wait_for_agent_probes_at_least_once_with_a_zero_timeout(self, monkeypatch):
+        probes = []
+        monkeypatch.setattr(travel_utils, "is_agent_up",
+                            lambda url, **kw: probes.append(kw) or False)
+        assert travel_utils.wait_for_agent("http://localhost:9999", timeout=0) is False
+        assert len(probes) == 1
+
+    def test_wait_for_agent_returns_on_first_success(self, monkeypatch):
+        calls = []
+
+        def up(url, **kwargs):
+            calls.append(url)
+            return True
+
+        monkeypatch.setattr(travel_utils, "is_agent_up", up)
+        assert travel_utils.wait_for_agent("http://localhost:9999", timeout=30) is True
+        assert len(calls) == 1
+
+    def test_wait_for_agent_never_sleeps_past_the_deadline(self, monkeypatch):
+        sleeps = []
+        monkeypatch.setattr(travel_utils, "is_agent_up", lambda url, **kw: False)
+        monkeypatch.setattr(travel_utils.time, "sleep", lambda seconds: sleeps.append(seconds))
+        travel_utils.wait_for_agent("http://localhost:9999", timeout=0.05, interval=10)
+        # interval is 10s but the whole budget is 0.05s: never sleep the interval.
+        assert sleeps
+        assert all(s <= 0.05 + 1e-6 for s in sleeps)
+
+
+class TestNonStringInput:
+    @pytest.mark.parametrize("value", [None, 42, [], {}])
+    def test_extract_location_tolerates_non_strings(self, value):
+        assert travel_utils.extract_location(value, default="fallback") == "fallback"
+
+    @pytest.mark.parametrize("value", [None, 42, [], {}])
+    def test_parse_forecast_days_tolerates_non_strings(self, value):
+        assert travel_utils.parse_forecast_days(value, default=4) == 4
+
+    def test_extract_message_text_on_a_task_without_content(self, make_task):
+        task = make_task("ignored")
+        task.message = {"role": "user"}
+        assert travel_utils.extract_message_text(task) == ""
+
+    def test_extract_message_text_ignores_non_text_parts(self, make_task):
+        task = make_task("ignored")
+        task.message = {"role": "user", "parts": [{"type": "image", "url": "x"},
+                                                  {"type": "text", "text": " hi "}]}
+        assert travel_utils.extract_message_text(task) == "hi"
 
 
 def test_text_artifact_shape():
