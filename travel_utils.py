@@ -194,12 +194,21 @@ def is_outdoor_friendly(forecast_text):
 
 # --- Agent health ------------------------------------------------------------
 
+_HEALTH_PATHS = ("/a2a/health", "/agent.json", "")
+
+
 def is_agent_up(url, timeout=2.0):
-    """True when an A2A agent answers on its health or index endpoint."""
+    """True when an A2A agent answers on its health or index endpoint.
+
+    ``timeout`` is the budget for the whole probe and is shared across the
+    endpoints that get tried, so probing a dead port costs about ``timeout``
+    seconds rather than ``timeout`` times the number of endpoints.
+    """
     base = url.rstrip("/")
-    for path in ("/a2a/health", "/agent.json", ""):
+    per_path = max(0.25, float(timeout) / len(_HEALTH_PATHS))
+    for path in _HEALTH_PATHS:
         try:
-            response = requests.get(base + path, timeout=timeout)
+            response = requests.get(base + path, timeout=per_path)
             if response.status_code < 500:
                 return True
         except requests.RequestException:
@@ -208,13 +217,20 @@ def is_agent_up(url, timeout=2.0):
 
 
 def wait_for_agent(url, timeout=30.0, interval=1.0):
-    """Block until an agent is reachable or the timeout expires."""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if is_agent_up(url):
+    """Block until an agent is reachable or the timeout expires.
+
+    Always probes at least once, and never sleeps or probes past the deadline.
+    Uses a monotonic clock so a system clock adjustment cannot extend the wait.
+    """
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    while True:
+        remaining = deadline - time.monotonic()
+        if is_agent_up(url, timeout=min(2.0, remaining) if remaining > 0 else 0.5):
             return True
-        time.sleep(interval)
-    return is_agent_up(url)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(interval, remaining))
 
 
 def ask_agent(client, question, fallback=""):
