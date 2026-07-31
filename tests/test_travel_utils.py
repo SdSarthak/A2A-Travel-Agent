@@ -146,6 +146,27 @@ class TestAskAgent:
         client = stub_client(answer="Error: agent exploded")
         assert travel_utils.ask_agent(client, "weather?", fallback="n/a") == ("n/a", False)
 
+    @pytest.mark.parametrize("answer", [
+        "Could not find coordinates for location: Atlantis",
+        "Could not parse weather data: KeyError",
+        "Error looking up location 'Paris': timeout",
+        "Error fetching weather: 503",
+        "Location search failed: Unable to geocode.",
+        "Please provide a search query or location to find.",
+        "Please specify a location for the weather forecast.",
+        "FAILED TO reach the service",
+    ])
+    def test_agent_side_failures_are_not_treated_as_answers(self, stub_client, answer):
+        """These read like prose but carry no data - counting them as success
+        makes the planner claim clear skies it never saw."""
+        assert travel_utils.ask_agent(stub_client(answer=answer), "q", fallback="n/a") == (
+            "n/a", False
+        )
+
+    def test_a_real_forecast_is_still_accepted(self, stub_client):
+        answer = "Weather forecast for Paris, France\nConditions: Clear sky"
+        assert travel_utils.ask_agent(stub_client(answer=answer), "q") == (answer, True)
+
     def test_blank_response_uses_fallback(self, stub_client):
         assert travel_utils.ask_agent(stub_client(answer="   "), "q", fallback="n/a") == ("n/a", False)
 

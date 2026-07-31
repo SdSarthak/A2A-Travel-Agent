@@ -233,6 +233,22 @@ def wait_for_agent(url, timeout=30.0, interval=1.0):
         time.sleep(min(interval, remaining))
 
 
+# Agents answer with plain text, so a failure has to be recognised by its
+# wording. These are the prefixes the agents in this repo use when they could
+# not do the work; treating them as successes silently poisons the plan.
+AGENT_FAILURE_PREFIXES = (
+    "error:",
+    "error looking up",
+    "error fetching",
+    "failed to",
+    "could not ",
+    "location search failed",
+    "please provide",
+    "please specify",
+    "please ask",
+)
+
+
 def ask_agent(client, question, fallback=""):
     """Ask an A2A client a question, returning ``(text, ok)``.
 
@@ -251,7 +267,9 @@ def ask_agent(client, question, fallback=""):
         return fallback, False
 
     answer = str(answer).strip()
-    if answer.lower().startswith("error:") or answer.lower().startswith("failed to"):
-        logging.getLogger(__name__).warning("agent returned an error response")
+    if answer.lower().startswith(AGENT_FAILURE_PREFIXES):
+        logging.getLogger(__name__).warning(
+            "agent could not answer: %s", answer.splitlines()[0][:120]
+        )
         return fallback, False
     return answer, True
